@@ -81,7 +81,7 @@ if __name__ == "__main__":
    
     # Construct an opinf "AB" model (linear in the state and linear in the exogenous inputs)
     #   Note: I don't construct a cAB ROM in this example since I know there is no forcing vector
-    l2solver = opinf.lstsq.L2Solver(regularizer=5e-3)
+    l2solver = opinf.lstsq.L2Solver(regularizer=5e-9)
     opinf_model = opinf.models.ContinuousModel("AB",solver=l2solver)
     opinf_model.fit(states=uhat, ddts=uhat_ddots,inputs=reduced_stacked_sideset_snapshots)
 
