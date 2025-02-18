@@ -190,12 +190,12 @@ function get_analysis_type(integrator::TimeIntegrator)
     end
 end
 
-function initialize(integrator::Newmark, solver::HessianMinimizer, model::LinearOpInfRom)
+function initialize(integrator::Newmark, solver::HessianMinimizer, model::RomModel)
     integrator.displacement[:] = model.reduced_state[:]
     solver.solution[:] = model.reduced_state[:]
 end
 
-function predict(integrator::Newmark, solver::Any, model::LinearOpInfRom)
+function predict(integrator::Newmark, solver::Any, model::RomModel)
     dt = integrator.time_step
     beta = integrator.β
     gamma = integrator.γ
@@ -205,7 +205,7 @@ function predict(integrator::Newmark, solver::Any, model::LinearOpInfRom)
     model.reduced_state[:] = integrator.displacement[:]
 end
 
-function correct(integrator::Newmark, solver::Any, model::LinearOpInfRom)
+function correct(integrator::Newmark, solver::Any, model::RomModel)
 
     dt = integrator.time_step
     beta = integrator.β
@@ -348,7 +348,7 @@ end
 function initialize_writing(
     params::Dict{String,Any},
     integrator::DynamicTimeIntegrator,
-    model::LinearOpInfRom,
+    model::RomModel,
 )
     initialize_writing(params,integrator,model.fom_model)
 end
@@ -572,7 +572,7 @@ function write_sideset_step_csv(params::Dict{String,Any},integrator::DynamicTime
 end
 
 
-function write_step_csv(integrator::DynamicTimeIntegrator, model::OpInfModel, sim_id::Integer)
+function write_step_csv(integrator::DynamicTimeIntegrator, model::RomModel, sim_id::Integer)
     stop = integrator.stop
     index_string = "-" * string(stop, pad = 4)
     sim_id_string = string(sim_id, pad = 2) * "-"
@@ -585,26 +585,39 @@ end
 function write_step_exodus(
     params::Dict{String,Any},
     integrator::DynamicTimeIntegrator,
-    model::LinearOpInfRom,
+    model::RomModel,
 )
     #Re-construct full state
-    reduced_state = model.reduced_state[:]
+    displacement = integrator.displacement
+    velocity = integrator.velocity
+    acceleration = integrator.acceleration
+    # Clean this up; maybe make a free dofs 2d array or move to a basis in matrix format
     for i = 1 : size(model.fom_model.current)[2]
       x_dof_index = 3 * (i - 1) + 1 
       y_dof_index = 3 * (i - 1) + 2 
       z_dof_index = 3 * (i - 1) + 3 
       if model.fom_model.free_dofs[x_dof_index]
-        model.fom_model.current[1,i] = model.basis[1,i,:]'reduced_state + model.fom_model.reference[1,i]
+        model.fom_model.current[1,i] = model.basis[1,i,:]'displacement + model.fom_model.reference[1,i]
+        model.fom_model.velocity[1,i] = model.basis[1,i,:]'velocity
+        model.fom_model.acceleration[1,i] = model.basis[1,i,:]'acceleration
       end  
 
       if model.fom_model.free_dofs[y_dof_index]
-        model.fom_model.current[2,i] = model.basis[2,i,:]'reduced_state + model.fom_model.reference[2,i]
+        model.fom_model.current[2,i] = model.basis[2,i,:]'displacement + model.fom_model.reference[2,i]
+        model.fom_model.velocity[2,i] = model.basis[2,i,:]'velocity
+        model.fom_model.acceleration[2,i] = model.basis[2,i,:]'acceleration
       end
  
       if model.fom_model.free_dofs[z_dof_index]
-        model.fom_model.current[3,i] = model.basis[3,i,:]'reduced_state+ model.fom_model.reference[3,i]
+        model.fom_model.current[3,i] = model.basis[3,i,:]'displacement + model.fom_model.reference[3,i]
+        model.fom_model.velocity[3,i] = model.basis[3,i,:]'velocity
+        model.fom_model.acceleration[3,i] = model.basis[3,i,:]'acceleration
       end
     end
+
+
+
+
     write_step_exodus(params,integrator,model.fom_model)
 end
 

@@ -461,6 +461,44 @@ function evaluate(integrator::Newmark, solver::HessianMinimizer, model::LinearOp
     solver.gradient[:] = -residual 
 end
 
+### Move to model?  
+function evaluate(integrator::Newmark, solver::HessianMinimizer, model::NeuralNetworkOpInfRom)
+    beta  = integrator.β
+    gamma = integrator.γ
+    dt = integrator.time_step
+
+    #J dx = -r
+    # Put in residual format
+    #e = [x* - x] -> x* = x + e
+    #Ax + Ae = b
+    #Ax - b = -Ae
+    #Ae = r, r = b - Ax 
+    ##M uddot + Ku = f
+
+    num_dof, = size(model.free_dofs)
+    I = Matrix{Float64}(LinearAlgebra.I, num_dof,num_dof)
+    py"""
+    import numpy as np
+    def setup_inputs(x):
+        xi = np.zeros((1,x.size))
+        xi[0] = x
+        inputs = torch.tensor(xi)
+        return inputs
+    """
+    model_inputs = py"setup_inputs"(solver.solution)
+    Kx,K = model.nn_model.forward(model_inputs,return_stiffness=true)
+
+    LHS = I / (dt*dt*beta) - K.detach().numpy()[1,:,:] 
+    RHS = model.reduced_boundary_forcing + 1.0/(dt*dt*beta).*integrator.disp_pre
+
+#
+    residual = RHS - LHS * solver.solution 
+#    residual = RHS .- (solver.solution / (dt*dt*beta) .+ Kx.detach().numpy()[1])
+    solver.hessian[:,:] = LHS
+    solver.gradient[:] = -residual 
+end
+
+
 
 function evaluate(integrator::QuasiStatic, solver::HessianMinimizer, model::SolidMechanics)
     stored_energy, internal_force, body_force, stiffness_matrix = evaluate(integrator, model)
@@ -600,11 +638,11 @@ end
 
 function compute_step(
     _::DynamicTimeIntegrator,
-    model::LinearOpInfRom,
+    model::RomModel,
     solver::HessianMinimizer,
     _::NewtonStep,
 )
-    return -solver.hessian\ solver.gradient
+    return -1.0 * (solver.hessian\ solver.gradient)
 end
 
 

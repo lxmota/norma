@@ -3,6 +3,9 @@
 # the U.S. Government retains certain rights in this software. This software
 # is released under the BSD license detailed in the file license.txt in the
 # top-level Norma.jl directory.
+using PyCall
+import NPZ
+
 @variables t, x, y, z
 D = Differential(t)
 
@@ -26,6 +29,47 @@ function SMDirichletBC(input_mesh::ExodusDatabase, bc_params::Dict{String,Any})
         acce_num,
     )
 end
+
+function SMOpInfDirichletBC(input_mesh::ExodusDatabase, bc_params::Dict{String,Any})
+    fom_bc = SMDirichletBC(input_mesh,bc_params)
+    node_set_name = bc_params["node set"]
+    expression = bc_params["function"]
+    offset = component_offset_from_string(bc_params["component"])
+    node_set_id = node_set_id_from_name(node_set_name, input_mesh)
+    node_set_node_indices = Exodus.read_node_set_nodes(input_mesh, node_set_id)
+    # expression is an arbitrary function of t, x, y, z in the input file
+    disp_num = eval(Meta.parse(expression))
+    velo_num = expand_derivatives(D(disp_num))
+    acce_num = expand_derivatives(D(velo_num))
+
+    opinf_model_file = bc_params["model-file"]
+    py""" 
+    import torch
+    def get_model(model_file):
+      return torch.load(model_file)
+    """
+    model = py"get_model"(opinf_model_file)
+
+    opinf_model_file = bc_params["model-file"]
+    basis_file = bc_params["basis-file"]
+    basis = NPZ.npzread(basis_file)
+    basis = basis["basis"]
+
+
+    SMOpInfDirichletBC(
+        node_set_name,
+        offset,
+        node_set_id,
+        node_set_node_indices,
+        disp_num,
+        velo_num,
+        acce_num,
+        fom_bc,
+        model,
+        basis,
+    )
+end
+
 
 function SMDirichletInclined(input_mesh::ExodusDatabase, bc_params::Dict{String,Any})
     node_set_name = bc_params["node set"]
@@ -239,6 +283,37 @@ function apply_bc(model::LinearOpInfRom, bc::SMDirichletBC)
     model.reduced_boundary_forcing[:] += bc_operator[1,:,:] * bc_vector
     end
 
+function apply_bc(model::NeuralNetworkOpInfRom, bc::SMOpInfDirichletBC)
+    model.fom_model.time = model.time
+    apply_bc(model.fom_model,bc.fom_bc)
+    bc_vector = zeros(0)
+    for node_index ∈ bc.fom_bc.node_set_node_indices
+        dof_index = 3 * (node_index - 1) + bc.fom_bc.offset
+        disp_val = model.fom_model.current[bc.fom_bc.offset,node_index] - model.fom_model.reference[bc.fom_bc.offset, node_index]
+        push!(bc_vector,disp_val)
+    end
+
+    py"""
+    import numpy as np
+    def setup_inputs(x):
+        xi = np.zeros((1,x.size))
+        xi[0] = x
+        inputs = torch.tensor(xi)
+        return inputs
+    """
+
+    reduced_bc_vector = bc.basis[1,:,:]' * bc_vector 
+    print(size(reduced_bc_vector),size(bc.basis),size(bc_vector))
+    model_inputs = py"setup_inputs"(reduced_bc_vector)
+    reduced_forcing = bc.nn_model.forward(model_inputs)
+    reduced_forcing = reduced_forcing.detach().numpy()[1,:]
+    # SM Dirichlet BC are only defined on a single x,y,z
+    model.reduced_boundary_forcing[:] += reduced_forcing 
+    end
+
+
+
+
 function apply_bc(model::SolidMechanics, bc::SMDirichletBC)
     for node_index ∈ bc.node_set_node_indices
         values = Dict(
@@ -367,7 +442,7 @@ end
 
 function find_point_in_mesh(
     point::Vector{Float64},
-    model::LinearOpInfRom,
+    model::RomModel,
     blk_id::Int,
     tol::Float64
 )
@@ -552,7 +627,7 @@ end
 
 
 
-function apply_bc(model::LinearOpInfRom, bc::SchwarzBoundaryCondition)
+function apply_bc(model::RomModel, bc::SchwarzBoundaryCondition)
     global_sim = bc.coupled_subsim.params["global_simulation"]
     schwarz_controller = global_sim.schwarz_controller
     if typeof(bc) == SMContactSchwarzBC && schwarz_controller.active_contact == false
@@ -855,6 +930,9 @@ function create_bcs(params::Dict{String,Any})
             if bc_type == "Dirichlet" 
                 boundary_condition = SMDirichletBC(input_mesh, bc_setting_params)
                 push!(boundary_conditions, boundary_condition)
+            elseif bc_type == "OpInf Dirichlet" 
+                boundary_condition = SMOpInfDirichletBC(input_mesh, bc_setting_params)
+                push!(boundary_conditions, boundary_condition)
             elseif bc_type == "Neumann"
                 boundary_condition = SMNeumannBC(input_mesh, bc_setting_params)
                 push!(boundary_conditions, boundary_condition)
@@ -904,8 +982,7 @@ function apply_bcs(model::SolidMechanics)
     end
 end
 
-function apply_bcs(model::LinearOpInfRom)
-
+function apply_bcs(model::RomModel)
     num_modes_ = size(model.reduced_state)
     model.reduced_boundary_forcing[:] .= 0.0
     for boundary_condition ∈ model.boundary_conditions
@@ -952,7 +1029,7 @@ function apply_ics(params::Dict{String,Any}, model::SolidMechanics)
     end
 end
 
-function apply_ics(params::Dict{String,Any}, model::LinearOpInfRom)
+function apply_ics(params::Dict{String,Any}, model::RomModel)
 
     apply_ics(params,model.fom_model)
 
